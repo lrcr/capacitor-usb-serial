@@ -222,7 +222,7 @@ public class UsbSerial {
                     return;
                 }
 
-                String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8).trim();
+                String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8);
 
                 JSObject result = new JSObject();
                 result.put("data", data);
@@ -252,7 +252,7 @@ public class UsbSerial {
                 return;
             }
 
-            String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8).trim();
+            String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8);
 
             JSObject result = new JSObject();
             result.put("data", data);
