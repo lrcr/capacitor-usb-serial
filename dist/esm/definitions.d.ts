@@ -1,3 +1,4 @@
+import type { PluginListenerHandle } from '@capacitor/core';
 /** Represents the response from a read operation */
 export declare type ReadResponse = {
     data: string;
@@ -91,6 +92,18 @@ export interface UsbSerialPlugin {
     stopStreaming(options: {
         key: string;
     }): Promise<void>;
+    /**
+     * Listen for dataReceived events when streaming
+     * @param {string} eventName - The event name ('dataReceived')
+     * @param {Function} listenerFunc - Callback function that receives DataReceivedEvent
+     * @returns {Promise<PluginListenerHandle>} A promise resolving to a listener handle
+     */
+    addListener(eventName: 'dataReceived', listenerFunc: (event: DataReceivedEvent) => void): Promise<PluginListenerHandle> & PluginListenerHandle;
+    /**
+     * Remove all listeners for this plugin
+     * @returns {Promise<void>}
+     */
+    removeAllListeners(): Promise<void>;
 }
 /**
  * Represents parity options for serial communication
