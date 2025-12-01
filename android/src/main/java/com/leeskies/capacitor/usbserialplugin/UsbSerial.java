@@ -403,7 +403,7 @@ public class UsbSerial {
         event.put("data", data);
         event.put("rawData", rawData);
 
-        plugin.notifyListeners("dataReceived", event);
+        plugin.notifyDataReceived(event);
     }
 
     private void notifyStreamError(String portKey, String error) {
@@ -414,7 +414,7 @@ public class UsbSerial {
         event.put("key", portKey);
         event.put("error", error);
 
-        plugin.notifyListeners("streamError", event);
+        plugin.notifyStreamError(event);
     }
 
 }

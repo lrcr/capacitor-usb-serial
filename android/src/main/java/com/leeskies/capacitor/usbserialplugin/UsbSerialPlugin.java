@@ -77,4 +77,13 @@ public class UsbSerialPlugin extends Plugin {
     public void stopStreaming(PluginCall call) {
         implementation.stopStreaming(call);
     }
+
+    // Public wrapper for notifyListeners (protected method in Plugin class)
+    public void notifyDataReceived(JSObject event) {
+        notifyListeners("dataReceived", event);
+    }
+
+    public void notifyStreamError(JSObject event) {
+        notifyListeners("streamError", event);
+    }
 }
