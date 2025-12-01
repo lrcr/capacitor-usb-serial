@@ -3,6 +3,22 @@ export declare type ReadResponse = {
     data: string;
     bytesRead: number;
 };
+/** Options for starting a data stream */
+export interface StreamOptions {
+    /** Port key to stream from */
+    key: string;
+    /** Delimiter to split messages (default: '\n') */
+    delimiter?: string;
+}
+/** Event emitted when streaming data is received */
+export interface DataReceivedEvent {
+    /** Port key that received the data */
+    key: string;
+    /** Parsed message (data between delimiters) */
+    data: string;
+    /** Raw data chunk received from device */
+    rawData: string;
+}
 /** Defines the interface for USB serial communication plugin */
 export interface UsbSerialPlugin {
     /**
@@ -61,6 +77,20 @@ export interface UsbSerialPlugin {
     read(options: {
         key: string;
     }): Promise<ReadResponse>;
+    /**
+     * Start streaming data from a device with automatic message parsing
+     * @param {StreamOptions} options - Object containing the portKey and optional delimiter
+     * @returns {Promise<void>} A promise that resolves when streaming starts
+     */
+    startStreaming(options: StreamOptions): Promise<void>;
+    /**
+     * Stop streaming data from a device
+     * @param {{key: string}} options - Object containing the portKey
+     * @returns {Promise<void>} A promise that resolves when streaming stops
+     */
+    stopStreaming(options: {
+        key: string;
+    }): Promise<void>;
 }
 /**
  * Represents parity options for serial communication

@@ -9,6 +9,9 @@ import java.util.Map;
 public class Const {
     static final int WRITE_WAIT_MILLIS = 500;
     static final int READ_WAIT_MILLIS = 500;
+    static final int READ_CHUNK_TIMEOUT_MILLIS = 100; // Timeout for each read chunk
+    static final int READ_IDLE_TIMEOUT_MILLIS = 200; // Time to wait with no data before considering read complete
+    static final int READ_MAX_TOTAL_MILLIS = 3000; // Safety limit for total read duration
     static final int DEFAULT_BAUD_RATE = 9600;
     static final int DEFAULT_DATA_BITS = 8;
     static final int DEFAULT_STOP_BITS = UsbSerialPort.STOPBITS_1;
@@ -27,7 +30,7 @@ public class Const {
         PARITY = Collections.unmodifiableMap(map);
     }
 
-    static  {
+    static {
         Map<Integer, Integer> map = new HashMap<>();
         map.put(1, UsbSerialPort.STOPBITS_1);
         map.put(2, UsbSerialPort.STOPBITS_2);
@@ -35,5 +38,6 @@ public class Const {
         STOP_BITS = Collections.unmodifiableMap(map);
     }
 
-    private Const() {};
+    private Const() {
+    };
 }

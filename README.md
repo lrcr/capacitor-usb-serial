@@ -156,6 +156,62 @@ Read a message from a device using its assigned portKey
 --------------------
 
 
+### startStreaming(...)
+
+```typescript
+startStreaming(options: StreamOptions) => Promise<void>
+```
+
+Start continuous data streaming with automatic message parsing based on delimiter
+
+| Param         | Type                                                    | Description                                          |
+| ------------- | ------------------------------------------------------- | ---------------------------------------------------- |
+| **`options`** | <code><a href="#streamoptions">StreamOptions</a></code> | - Object containing the portKey and delimiter        |
+
+--------------------
+
+
+### stopStreaming(...)
+
+```typescript
+stopStreaming(options: { key: string; }) => Promise<void>
+```
+
+Stop continuous data streaming for a device
+
+| Param         | Type                          | Description                     |
+| ------------- | ----------------------------- | ------------------------------- |
+| **`options`** | <code>{ key: string; }</code> | - Object containing the portKey |
+
+--------------------
+
+
+## Streaming Example
+
+For devices that continuously send data (like scales, sensors, GPS), use streaming instead of polling:
+
+```typescript
+import { UsbSerial } from 'capacitor-usb-serial';
+
+// Connect to device
+const { portKey } = await UsbSerial.openConnection({ deviceId: 123 });
+
+// Start streaming (default delimiter: '\n')
+await UsbSerial.startStreaming({ key: portKey, delimiter: '\r\n' });
+
+// Listen for data
+const listener = await UsbSerial.addListener('dataReceived', (event) => {
+  console.log('Parsed message:', event.data);      // Complete message
+  console.log('Raw chunk:', event.rawData);         // Raw bytes received
+  console.log('From port:', event.key);
+});
+
+// Later: stop streaming
+await UsbSerial.stopStreaming({ key: portKey });
+await listener.remove();
+```
+
+
 ### Interfaces
 
 
@@ -191,6 +247,27 @@ Extends ConnectionParams to include deviceId
 | Prop           | Type                | Description                      |
 | -------------- | ------------------- | -------------------------------- |
 | **`deviceId`** | <code>number</code> | Unique identifier for the device |
+
+
+#### StreamOptions
+
+Options for starting a data stream
+
+| Prop            | Type                | Description                                    |
+| --------------- | ------------------- | ---------------------------------------------- |
+| **`key`**       | <code>string</code> | Port key to stream from                        |
+| **`delimiter`** | <code>string</code> | Delimiter to split messages (default: '\\n')   |
+
+
+#### DataReceivedEvent
+
+Event emitted when streaming data is received
+
+| Prop          | Type                | Description                               |
+| ------------- | ------------------- | ----------------------------------------- |
+| **`key`**     | <code>string</code> | Port key that received the data           |
+| **`data`**    | <code>string</code> | Parsed message (data between delimiters)  |
+| **`rawData`** | <code>string</code> | Raw data chunk received from device       |
 
 
 ### Type Aliases

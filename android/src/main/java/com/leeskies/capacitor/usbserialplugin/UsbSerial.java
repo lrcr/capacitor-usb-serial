@@ -15,6 +15,7 @@ import com.getcapacitor.PluginCall;
 import com.hoho.android.usbserial.driver.UsbSerialDriver;
 import com.hoho.android.usbserial.driver.UsbSerialPort;
 import com.hoho.android.usbserial.driver.UsbSerialProber;
+import com.hoho.android.usbserial.util.SerialInputOutputManager;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -26,6 +27,10 @@ public class UsbSerial {
     private Context context;
     private UsbManager manager;
     private Map<String, UsbSerialPort> activePorts = new HashMap<>();
+    private Map<String, SerialInputOutputManager> streamManagers = new HashMap<>();
+    private Map<String, StringBuilder> streamBuffers = new HashMap<>();
+    private Map<String, String> streamDelimiters = new HashMap<>();
+    private UsbSerialPlugin plugin;
 
     private String generatePortKey(UsbDevice device) {
         return device.getDeviceName() + "_" + device.getDeviceId();
@@ -84,7 +89,8 @@ public class UsbSerial {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
-        PendingIntent permissionIntent = PendingIntent.getBroadcast(context, 0, new Intent(ACTION_USB_PERMISSION), flags);
+        PendingIntent permissionIntent = PendingIntent.getBroadcast(context, 0, new Intent(ACTION_USB_PERMISSION),
+                flags);
 
         IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
         BroadcastReceiver usbReceiver = new BroadcastReceiver() {
@@ -117,8 +123,10 @@ public class UsbSerial {
         int stopBits = call.getInt("stopBits", Const.DEFAULT_STOP_BITS);
         String parityKey = call.getString("parity");
         int parity = Const.DEFAULT_PARITY;
-        if (Const.PARITY.containsKey(parityKey)) parity = Const.PARITY.get(parityKey);
-        if (!Const.STOP_BITS.containsKey(stopBits)) call.reject("Invalid int value for stopBits: " + stopBits);
+        if (Const.PARITY.containsKey(parityKey))
+            parity = Const.PARITY.get(parityKey);
+        if (!Const.STOP_BITS.containsKey(stopBits))
+            call.reject("Invalid int value for stopBits: " + stopBits);
         UsbDeviceConnection connection = manager.openDevice(device);
         if (connection == null) {
             call.reject("Failed to open device connection");
@@ -130,7 +138,9 @@ public class UsbSerial {
             port.setParameters(baudRate, dataBits, stopBits, parity);
             String key = generatePortKey(device);
             activePorts.put(key, port);
-            call.resolve();
+            JSObject result = new JSObject();
+            result.put("portKey", key);
+            call.resolve(result);
         } catch (Exception e) {
             call.reject("Failed to initialize connection with selected device: " + e.getMessage());
         }
@@ -151,6 +161,54 @@ public class UsbSerial {
         } catch (Exception e) {
             call.reject("Failed to close port: " + e.getMessage());
         }
+    }
+
+    /**
+     * Reads data from the port in chunks until no more data arrives (idle timeout).
+     * This prevents data truncation when responses arrive in multiple chunks.
+     * 
+     * @param port The USB serial port to read from
+     * @return ReadResult containing the accumulated data and total bytes read
+     * @throws Exception if read operation fails
+     */
+    private static class ReadResult {
+        String data;
+        int bytesRead;
+
+        ReadResult(String data, int bytesRead) {
+            this.data = data;
+            this.bytesRead = bytesRead;
+        }
+    }
+
+    private ReadResult readUntilIdle(UsbSerialPort port) throws Exception {
+        StringBuilder accumulated = new StringBuilder();
+        int totalBytesRead = 0;
+        long startTime = System.currentTimeMillis();
+        long lastDataTime = startTime;
+
+        while (true) {
+            // Safety: check total elapsed time
+            if (System.currentTimeMillis() - startTime > Const.READ_MAX_TOTAL_MILLIS) {
+                break;
+            }
+
+            byte[] buffer = new byte[8192];
+            int numBytesRead = port.read(buffer, Const.READ_CHUNK_TIMEOUT_MILLIS);
+
+            if (numBytesRead > 0) {
+                accumulated.append(new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8));
+                totalBytesRead += numBytesRead;
+                lastDataTime = System.currentTimeMillis();
+            } else {
+                // Check if we've been idle long enough
+                if (System.currentTimeMillis() - lastDataTime > Const.READ_IDLE_TIMEOUT_MILLIS) {
+                    break;
+                }
+            }
+        }
+
+        return new ReadResult(accumulated.toString(), totalBytesRead);
     }
 
     public void endConnections(PluginCall call) {
@@ -208,28 +266,17 @@ public class UsbSerial {
             port.write(messageBytes, Const.WRITE_WAIT_MILLIS);
 
             if (!noRead) {
-                byte[] clearBuffer = new byte[8192];
-                port.read(clearBuffer, 10);
+                ReadResult result = readUntilIdle(port);
 
-                byte[] buffer = new byte[8192];
-                int numBytesRead = port.read(buffer, Const.READ_WAIT_MILLIS);
-
-                if (numBytesRead < 0) {
-                    JSObject result = new JSObject();
-                    result.put("data", "Read operation failed after write");
-                    result.put("bytesRead", 0);
-                    call.resolve(result);
-                    return;
-                }
-
-                String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8);
-
-                JSObject result = new JSObject();
-                result.put("data", data);
-                result.put("bytesRead", numBytesRead);
-                call.resolve(result);
+                JSObject response = new JSObject();
+                response.put("data", result.data);
+                response.put("bytesRead", result.bytesRead);
+                call.resolve(response);
             } else {
-                call.resolve();
+                JSObject result = new JSObject();
+                result.put("data", "");
+                result.put("bytesRead", 0);
+                call.resolve(result);
             }
         } catch (Exception e) {
             call.reject("Communication with port failed: " + e.getMessage());
@@ -244,20 +291,12 @@ public class UsbSerial {
             return;
         }
         try {
-            byte[] buffer = new byte[8192];
-            int numBytesRead = port.read(buffer, Const.READ_WAIT_MILLIS);
+            ReadResult result = readUntilIdle(port);
 
-            if (numBytesRead < 0) {
-                call.reject("Read operation failed");
-                return;
-            }
-
-            String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8);
-
-            JSObject result = new JSObject();
-            result.put("data", data);
-            result.put("bytesRead", numBytesRead);
-            call.resolve(result);
+            JSObject response = new JSObject();
+            response.put("data", result.data);
+            response.put("bytesRead", result.bytesRead);
+            call.resolve(response);
         } catch (Exception e) {
             call.reject("Failed to read data: " + e.getMessage());
         }
@@ -273,6 +312,109 @@ public class UsbSerial {
 
         result.put("ports", keysArray);
         call.resolve(result);
+    }
+
+    public void setPlugin(UsbSerialPlugin plugin) {
+        this.plugin = plugin;
+    }
+
+    public void startStreaming(PluginCall call) {
+        String portKey = call.getString("key");
+        String delimiter = call.getString("delimiter", "\n");
+
+        UsbSerialPort port = activePorts.get(portKey);
+        if (port == null) {
+            call.reject("Port not found: " + portKey);
+            return;
+        }
+
+        // Stop existing stream if any
+        stopStreamingInternal(portKey);
+
+        streamDelimiters.put(portKey, delimiter);
+        streamBuffers.put(portKey, new StringBuilder());
+
+        SerialInputOutputManager.Listener listener = new SerialInputOutputManager.Listener() {
+            @Override
+            public void onNewData(byte[] data) {
+                processStreamData(portKey, data);
+            }
+
+            @Override
+            public void onRunError(Exception e) {
+                notifyStreamError(portKey, e.getMessage());
+            }
+        };
+
+        SerialInputOutputManager manager = new SerialInputOutputManager(port, listener);
+        streamManagers.put(portKey, manager);
+        manager.start();
+        call.resolve();
+    }
+
+    public void stopStreaming(PluginCall call) {
+        String portKey = call.getString("key");
+        stopStreamingInternal(portKey);
+        call.resolve();
+    }
+
+    private void stopStreamingInternal(String portKey) {
+        SerialInputOutputManager manager = streamManagers.get(portKey);
+        if (manager != null) {
+            manager.stop();
+            streamManagers.remove(portKey);
+        }
+        streamBuffers.remove(portKey);
+        streamDelimiters.remove(portKey);
+    }
+
+    private void processStreamData(String portKey, byte[] data) {
+        String rawChunk = new String(data, StandardCharsets.UTF_8);
+        StringBuilder buffer = streamBuffers.get(portKey);
+        String delimiter = streamDelimiters.get(portKey);
+
+        if (buffer == null || delimiter == null)
+            return;
+
+        buffer.append(rawChunk);
+
+        // Split by delimiter and emit complete messages
+        String bufferStr = buffer.toString();
+        int delimiterIndex;
+
+        while ((delimiterIndex = bufferStr.indexOf(delimiter)) >= 0) {
+            String message = bufferStr.substring(0, delimiterIndex);
+            emitDataReceived(portKey, message, rawChunk);
+
+            bufferStr = bufferStr.substring(delimiterIndex + delimiter.length());
+        }
+
+        // Keep remaining incomplete data in buffer
+        buffer.setLength(0);
+        buffer.append(bufferStr);
+    }
+
+    private void emitDataReceived(String portKey, String data, String rawData) {
+        if (plugin == null)
+            return;
+
+        JSObject event = new JSObject();
+        event.put("key", portKey);
+        event.put("data", data);
+        event.put("rawData", rawData);
+
+        plugin.notifyListeners("dataReceived", event);
+    }
+
+    private void notifyStreamError(String portKey, String error) {
+        if (plugin == null)
+            return;
+
+        JSObject event = new JSObject();
+        event.put("key", portKey);
+        event.put("error", error);
+
+        plugin.notifyListeners("streamError", event);
     }
 
 }

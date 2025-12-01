@@ -17,6 +17,7 @@ public class UsbSerialPlugin extends Plugin {
     @Override
     public void load() {
         implementation = new UsbSerial(getContext());
+        implementation.setPlugin(this);
     }
 
     @PluginMethod
@@ -63,5 +64,17 @@ public class UsbSerialPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void getActivePorts(PluginCall call) { implementation.getActivePorts(call); }
+    public void getActivePorts(PluginCall call) {
+        implementation.getActivePorts(call);
+    }
+
+    @PluginMethod
+    public void startStreaming(PluginCall call) {
+        implementation.startStreaming(call);
+    }
+
+    @PluginMethod
+    public void stopStreaming(PluginCall call) {
+        implementation.stopStreaming(call);
+    }
 }
