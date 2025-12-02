@@ -19,17 +19,17 @@ import com.hoho.android.usbserial.util.SerialInputOutputManager;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class UsbSerial {
     private Context context;
     private UsbManager manager;
-    private Map<String, UsbSerialPort> activePorts = new HashMap<>();
-    private Map<String, SerialInputOutputManager> streamManagers = new HashMap<>();
-    private Map<String, StringBuilder> streamBuffers = new HashMap<>();
-    private Map<String, String> streamDelimiters = new HashMap<>();
+    private Map<String, UsbSerialPort> activePorts = new ConcurrentHashMap<>();
+    private Map<String, SerialInputOutputManager> streamManagers = new ConcurrentHashMap<>();
+    private Map<String, StringBuilder> streamBuffers = new ConcurrentHashMap<>();
+    private Map<String, String> streamDelimiters = new ConcurrentHashMap<>();
     private UsbSerialPlugin plugin;
 
     private String generatePortKey(UsbDevice device) {
