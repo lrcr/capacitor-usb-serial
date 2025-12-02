@@ -21,6 +21,14 @@ export interface DataReceivedEvent {
   rawData: string;
 }
 
+/** Event emitted when a streaming error occurs */
+export interface StreamErrorEvent {
+  /** Port key where the error occurred */
+  key: string;
+  /** Error message */
+  error: string;
+}
+
 /** Defines the interface for USB serial communication plugin */
 export interface UsbSerialPlugin {
   /** 
@@ -93,6 +101,17 @@ export interface UsbSerialPlugin {
   addListener(
     eventName: 'dataReceived',
     listenerFunc: (event: DataReceivedEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for streamError events
+   * @param {string} eventName - The event name ('streamError')
+   * @param {Function} listenerFunc - Callback function that receives StreamErrorEvent
+   * @returns {Promise<PluginListenerHandle>} A promise resolving to a listener handle
+   */
+  addListener(
+    eventName: 'streamError',
+    listenerFunc: (event: StreamErrorEvent) => void,
   ): Promise<PluginListenerHandle> & PluginListenerHandle;
 
   /**
