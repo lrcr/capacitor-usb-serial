@@ -80,10 +80,14 @@ public class UsbSerialPlugin extends Plugin {
 
     // Public wrapper for notifyListeners (protected method in Plugin class)
     public void notifyDataReceived(JSObject event) {
-        notifyListeners("dataReceived", event);
+        if (getActivity() != null) {
+            getActivity().runOnUiThread(() -> notifyListeners("dataReceived", event));
+        }
     }
 
     public void notifyStreamError(JSObject event) {
-        notifyListeners("streamError", event);
+        if (getActivity() != null) {
+            getActivity().runOnUiThread(() -> notifyListeners("streamError", event));
+        }
     }
 }

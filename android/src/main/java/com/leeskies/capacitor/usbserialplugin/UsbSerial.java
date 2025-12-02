@@ -337,12 +337,16 @@ public class UsbSerial {
         SerialInputOutputManager.Listener listener = new SerialInputOutputManager.Listener() {
             @Override
             public void onNewData(byte[] data) {
-                processStreamData(portKey, data);
+                try {
+                    processStreamData(portKey, data);
+                } catch (Exception e) {
+                    notifyStreamError(portKey, "Error processing data: " + e.getMessage());
+                }
             }
 
             @Override
             public void onRunError(Exception e) {
-                notifyStreamError(portKey, e.getMessage());
+                notifyStreamError(portKey, "Serial IO Error: " + e.getMessage());
             }
         };
 
@@ -369,29 +373,33 @@ public class UsbSerial {
     }
 
     private void processStreamData(String portKey, byte[] data) {
-        String rawChunk = new String(data, StandardCharsets.UTF_8);
-        StringBuilder buffer = streamBuffers.get(portKey);
-        String delimiter = streamDelimiters.get(portKey);
+        try {
+            String rawChunk = new String(data, StandardCharsets.UTF_8);
+            StringBuilder buffer = streamBuffers.get(portKey);
+            String delimiter = streamDelimiters.get(portKey);
 
-        if (buffer == null || delimiter == null)
-            return;
+            if (buffer == null || delimiter == null)
+                return;
 
-        buffer.append(rawChunk);
+            buffer.append(rawChunk);
 
-        // Split by delimiter and emit complete messages
-        String bufferStr = buffer.toString();
-        int delimiterIndex;
+            // Split by delimiter and emit complete messages
+            String bufferStr = buffer.toString();
+            int delimiterIndex;
 
-        while ((delimiterIndex = bufferStr.indexOf(delimiter)) >= 0) {
-            String message = bufferStr.substring(0, delimiterIndex);
-            emitDataReceived(portKey, message, rawChunk);
+            while ((delimiterIndex = bufferStr.indexOf(delimiter)) >= 0) {
+                String message = bufferStr.substring(0, delimiterIndex);
+                emitDataReceived(portKey, message, rawChunk);
 
-            bufferStr = bufferStr.substring(delimiterIndex + delimiter.length());
+                bufferStr = bufferStr.substring(delimiterIndex + delimiter.length());
+            }
+
+            // Keep remaining incomplete data in buffer
+            buffer.setLength(0);
+            buffer.append(bufferStr);
+        } catch (Exception e) {
+            notifyStreamError(portKey, "Parsing error: " + e.getMessage());
         }
-
-        // Keep remaining incomplete data in buffer
-        buffer.setLength(0);
-        buffer.append(bufferStr);
     }
 
     private void emitDataReceived(String portKey, String data, String rawData) {
