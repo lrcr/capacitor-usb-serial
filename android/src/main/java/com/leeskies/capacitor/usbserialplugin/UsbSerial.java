@@ -283,6 +283,31 @@ public class UsbSerial {
         }
     }
 
+    private void flushInputBuffer(UsbSerialPort port) throws Exception {
+        StringBuilder flushed = new StringBuilder();
+        int totalFlushed = 0;
+        byte[] buffer = new byte[8192];
+
+        while (true) {
+            int numBytes = port.read(buffer, 50);
+            if (numBytes <= 0) {
+                break;
+            }
+            totalFlushed += numBytes;
+            String chunk = new String(buffer, 0, numBytes, StandardCharsets.UTF_8);
+            flushed.append(chunk);
+        }
+
+        if (totalFlushed > 0) {
+            Log.d(TAG, String.format("Flushed %d bytes from buffer: %s (hex: %s)",
+                    totalFlushed,
+                    flushed.toString().replace("\r", "\\r").replace("\n", "\\n"),
+                    bytesToHex(flushed.toString().getBytes(StandardCharsets.UTF_8), totalFlushed)));
+        } else {
+            Log.d(TAG, "Buffer was clean (no pending data)");
+        }
+    }
+
     public void write(PluginCall call) {
         String portKey = call.getString("key");
         String message = call.getString("message");
@@ -295,8 +320,20 @@ public class UsbSerial {
         }
 
         try {
+            long writeStartTime = System.currentTimeMillis();
+
+            flushInputBuffer(port);
+
             byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
+            Log.d(TAG, String.format("Writing command: '%s' (hex: %s)",
+                    message.replace("\r", "\\r").replace("\n", "\\n"),
+                    bytesToHex(messageBytes, messageBytes.length)));
+
+            long beforeWrite = System.currentTimeMillis();
             port.write(messageBytes, Const.WRITE_WAIT_MILLIS);
+            long afterWrite = System.currentTimeMillis();
+
+            Log.d(TAG, String.format("Write completed in %dms", afterWrite - beforeWrite));
 
             if (!noRead) {
                 ReadResult result = readUntilIdle(port);
@@ -311,6 +348,9 @@ public class UsbSerial {
                 result.put("bytesRead", 0);
                 call.resolve(result);
             }
+
+            long totalTime = System.currentTimeMillis() - writeStartTime;
+            Log.d(TAG, String.format("Total write operation took %dms", totalTime));
         } catch (Exception e) {
             call.reject("Communication with port failed: " + e.getMessage());
         }
