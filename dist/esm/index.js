@@ -10,12 +10,12 @@ const getDeviceHandlers = async () => {
         async disconnect() {
             await UsbSerialPrimitive.endConnection({ key: this.device.deviceKey });
         },
-        async write(message) {
-            const response = await UsbSerialPrimitive.write({ key: this.device.deviceKey, message });
+        async write(message, expectedBytes) {
+            const response = await UsbSerialPrimitive.write({ key: this.device.deviceKey, message, expectedBytes });
             return response;
         },
-        async read() {
-            return await UsbSerialPrimitive.read({ key: this.device.deviceKey });
+        async read(expectedBytes) {
+            return await UsbSerialPrimitive.read({ key: this.device.deviceKey, expectedBytes });
         },
     }));
     return deviceHandlers;
