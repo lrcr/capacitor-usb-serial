@@ -180,14 +180,25 @@ public class UsbSerial {
     private static class ReadResult {
         String data;
         int bytesRead;
+        boolean valid;
+        String invalidReason;
 
         ReadResult(String data, int bytesRead) {
             this.data = data;
             this.bytesRead = bytesRead;
+            this.valid = true;
+            this.invalidReason = null;
+        }
+
+        ReadResult(String data, int bytesRead, boolean valid, String invalidReason) {
+            this.data = data;
+            this.bytesRead = bytesRead;
+            this.valid = valid;
+            this.invalidReason = invalidReason;
         }
     }
 
-    private ReadResult readUntilIdle(UsbSerialPort port) throws Exception {
+    private ReadResult readUntilIdle(UsbSerialPort port, Integer expectedBytes) throws Exception {
         StringBuilder accumulated = new StringBuilder();
         int totalBytesRead = 0;
         long startTime = System.currentTimeMillis();
@@ -231,6 +242,12 @@ public class UsbSerial {
         Log.d(TAG, String.format("Read complete: %d bytes in %d chunks over %dms, result: %s",
                 totalBytesRead, chunkCount, totalTime,
                 result.replace("\r", "\\r").replace("\n", "\\n")));
+
+        if (expectedBytes != null && totalBytesRead != expectedBytes) {
+            String reason = String.format("Expected %d bytes but got %d", expectedBytes, totalBytesRead);
+            Log.w(TAG, "Invalid read: " + reason);
+            return new ReadResult(result, totalBytesRead, false, reason);
+        }
 
         return new ReadResult(result, totalBytesRead);
     }
@@ -312,6 +329,7 @@ public class UsbSerial {
         String portKey = call.getString("key");
         String message = call.getString("message");
         Boolean noRead = call.getBoolean("noRead", false);
+        Integer expectedBytes = call.getInt("expectedBytes");
 
         UsbSerialPort port = activePorts.get(portKey);
         if (port == null) {
@@ -336,16 +354,21 @@ public class UsbSerial {
             Log.d(TAG, String.format("Write completed in %dms", afterWrite - beforeWrite));
 
             if (!noRead) {
-                ReadResult result = readUntilIdle(port);
+                ReadResult result = readUntilIdle(port, expectedBytes);
 
                 JSObject response = new JSObject();
                 response.put("data", result.data);
                 response.put("bytesRead", result.bytesRead);
+                response.put("valid", result.valid);
+                if (result.invalidReason != null) {
+                    response.put("invalidReason", result.invalidReason);
+                }
                 call.resolve(response);
             } else {
                 JSObject result = new JSObject();
                 result.put("data", "");
                 result.put("bytesRead", 0);
+                result.put("valid", true);
                 call.resolve(result);
             }
 
@@ -358,17 +381,23 @@ public class UsbSerial {
 
     public void read(PluginCall call) {
         String portKey = call.getString("key");
+        Integer expectedBytes = call.getInt("expectedBytes");
+
         UsbSerialPort port = activePorts.get(portKey);
         if (port == null) {
             call.reject("Specified port not found");
             return;
         }
         try {
-            ReadResult result = readUntilIdle(port);
+            ReadResult result = readUntilIdle(port, expectedBytes);
 
             JSObject response = new JSObject();
             response.put("data", result.data);
             response.put("bytesRead", result.bytesRead);
+            response.put("valid", result.valid);
+            if (result.invalidReason != null) {
+                response.put("invalidReason", result.invalidReason);
+            }
             call.resolve(response);
         } catch (Exception e) {
             call.reject("Failed to read data: " + e.getMessage());

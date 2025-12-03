@@ -1,7 +1,12 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 
 /** Represents the response from a read operation */
-export type ReadResponse = { data: string, bytesRead: number };
+export type ReadResponse = {
+  data: string,
+  bytesRead: number,
+  valid: boolean,
+  invalidReason?: string
+};
 
 /** Options for starting a data stream */
 export interface StreamOptions {
@@ -66,17 +71,17 @@ export interface UsbSerialPlugin {
   
   /**
    * Write a message to a device using its assigned portKey
-   * @param {{key: string, message: string, noRead?: boolean}} options - Object containing the portKey and message to write. Pass noRead to skip the immediate read response
+   * @param {{key: string, message: string, noRead?: boolean, expectedBytes?: number}} options - Object containing the portKey and message to write. Pass noRead to skip the immediate read response. Pass expectedBytes to validate response length.
    * @returns {Promise<ReadResponse>} A promise that resolves when the message is written
    */
-  write(options: { key: string, message: string, noRead?: boolean }): Promise<ReadResponse>;
+  write(options: { key: string, message: string, noRead?: boolean, expectedBytes?: number }): Promise<ReadResponse>;
   
   /**
    * Read a message from a device using its assigned portKey
-   * @param {{key: string}} options - Object containing the portKey
+   * @param {{key: string, expectedBytes?: number}} options - Object containing the portKey. Pass expectedBytes to validate response length.
    * @returns {Promise<ReadResponse>} A promise that resolves to the read response
    */
-  read(options: { key: string }): Promise<ReadResponse>;
+  read(options: { key: string, expectedBytes?: number }): Promise<ReadResponse>;
   
   /**
    * Start streaming data from a device with automatic message parsing
@@ -179,15 +184,17 @@ export interface DeviceHandler {
     /**
      * Write a message to the device (shorthand for UsbSerial.write)
      * @param {string} message - The message to write
+     * @param {number} [expectedBytes] - Optional expected response length in bytes
      * @returns {Promise<ReadResponse>} A promise that resolves when the message is written
      */
-    write(message: string): Promise<ReadResponse>;
+    write(message: string, expectedBytes?: number): Promise<ReadResponse>;
 
     /**
      * Read from the device (shorthand for UsbSerial.read)
+     * @param {number} [expectedBytes] - Optional expected response length in bytes
      * @returns {Promise<ReadResponse>} A promise that resolves to the read response
      */
-    read(): Promise<ReadResponse>;
+    read(expectedBytes?: number): Promise<ReadResponse>;
 }
 
 /**
