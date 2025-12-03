@@ -8,6 +8,7 @@ import android.content.IntentFilter;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
+import android.util.Log;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -24,6 +25,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class UsbSerial {
+    private static final String TAG = "UsbSerial";
+    private static final String TAG_STREAM = "UsbSerial.Stream";
+
     private Context context;
     private UsbManager manager;
     private Map<String, UsbSerialPort> activePorts = new ConcurrentHashMap<>();
@@ -188,6 +192,9 @@ public class UsbSerial {
         int totalBytesRead = 0;
         long startTime = System.currentTimeMillis();
         long lastDataTime = startTime;
+        int chunkCount = 0;
+
+        Log.d(TAG, "Starting readUntilIdle");
 
         while (true) {
             // Safety: check total elapsed time
@@ -199,18 +206,33 @@ public class UsbSerial {
             int numBytesRead = port.read(buffer, Const.READ_CHUNK_TIMEOUT_MILLIS);
 
             if (numBytesRead > 0) {
-                accumulated.append(new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8));
+                chunkCount++;
+                String chunk = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8);
+                accumulated.append(chunk);
                 totalBytesRead += numBytesRead;
                 lastDataTime = System.currentTimeMillis();
+
+                Log.d(TAG, String.format("Chunk %d: %d bytes, data: %s (hex: %s)",
+                        chunkCount, numBytesRead,
+                        chunk.replace("\r", "\\r").replace("\n", "\\n"),
+                        bytesToHex(buffer, numBytesRead)));
             } else {
                 // Check if we've been idle long enough
-                if (System.currentTimeMillis() - lastDataTime > Const.READ_IDLE_TIMEOUT_MILLIS) {
+                long idleTime = System.currentTimeMillis() - lastDataTime;
+                if (idleTime > Const.READ_IDLE_TIMEOUT_MILLIS) {
+                    Log.d(TAG, String.format("Idle timeout reached (%dms), stopping read", idleTime));
                     break;
                 }
             }
         }
 
-        return new ReadResult(accumulated.toString(), totalBytesRead);
+        String result = accumulated.toString();
+        long totalTime = System.currentTimeMillis() - startTime;
+        Log.d(TAG, String.format("Read complete: %d bytes in %d chunks over %dms, result: %s",
+                totalBytesRead, chunkCount, totalTime,
+                result.replace("\r", "\\r").replace("\n", "\\n")));
+
+        return new ReadResult(result, totalBytesRead);
     }
 
     public void endConnections(PluginCall call) {
@@ -333,6 +355,9 @@ public class UsbSerial {
         String portKey = call.getString("key");
         String delimiter = call.getString("delimiter", "\n");
 
+        Log.d(TAG_STREAM, String.format("[%s] Starting stream with delimiter: %s",
+                portKey, delimiter.replace("\r", "\\r").replace("\n", "\\n")));
+
         UsbSerialPort port = activePorts.get(portKey);
         if (port == null) {
             call.reject("Port not found: " + portKey);
@@ -349,14 +374,18 @@ public class UsbSerial {
             @Override
             public void onNewData(byte[] data) {
                 try {
+                    Log.d(TAG_STREAM, String.format("[%s] onNewData: %d bytes (hex: %s)",
+                            portKey, data.length, bytesToHex(data, Math.min(data.length, 64))));
                     processStreamData(portKey, data);
                 } catch (Exception e) {
+                    Log.e(TAG_STREAM, String.format("[%s] Error processing data: %s", portKey, e.getMessage()), e);
                     notifyStreamError(portKey, "Error processing data: " + e.getMessage());
                 }
             }
 
             @Override
             public void onRunError(Exception e) {
+                Log.e(TAG_STREAM, String.format("[%s] Serial IO Error: %s", portKey, e.getMessage()), e);
                 notifyStreamError(portKey, "Serial IO Error: " + e.getMessage());
             }
         };
@@ -364,6 +393,7 @@ public class UsbSerial {
         SerialInputOutputManager manager = new SerialInputOutputManager(port, listener);
         streamManagers.put(portKey, manager);
         manager.start();
+        Log.d(TAG_STREAM, String.format("[%s] Stream started successfully", portKey));
         call.resolve();
     }
 
@@ -376,6 +406,7 @@ public class UsbSerial {
     private void stopStreamingInternal(String portKey) {
         SerialInputOutputManager manager = streamManagers.get(portKey);
         if (manager != null) {
+            Log.d(TAG_STREAM, String.format("[%s] Stopping stream", portKey));
             manager.stop();
             streamManagers.remove(portKey);
         }
@@ -389,18 +420,31 @@ public class UsbSerial {
             StringBuilder buffer = streamBuffers.get(portKey);
             String delimiter = streamDelimiters.get(portKey);
 
-            if (buffer == null || delimiter == null)
+            if (buffer == null || delimiter == null) {
+                Log.w(TAG_STREAM, String.format("[%s] Buffer or delimiter is null, ignoring data", portKey));
                 return;
+            }
 
             buffer.append(rawChunk);
+            Log.d(TAG_STREAM, String.format("[%s] Buffer after append: %s",
+                    portKey, buffer.toString().replace("\r", "\\r").replace("\n", "\\n")));
 
             // Split by delimiter and emit complete messages
             String bufferStr = buffer.toString();
             int delimiterIndex;
+            int messageCount = 0;
 
             while ((delimiterIndex = bufferStr.indexOf(delimiter)) >= 0) {
                 String message = bufferStr.substring(0, delimiterIndex);
-                emitDataReceived(portKey, message, rawChunk);
+                messageCount++;
+
+                // Construct the "raw" data for this message (message + delimiter)
+                // This ensures JS gets the full context, not just the latest chunk
+                String completeRawMessage = message + delimiter;
+
+                Log.d(TAG_STREAM, String.format("[%s] Emitting message %d: %s",
+                        portKey, messageCount, message));
+                emitDataReceived(portKey, message, completeRawMessage);
 
                 bufferStr = bufferStr.substring(delimiterIndex + delimiter.length());
             }
@@ -408,32 +452,56 @@ public class UsbSerial {
             // Keep remaining incomplete data in buffer
             buffer.setLength(0);
             buffer.append(bufferStr);
+
+            if (bufferStr.length() > 0) {
+                Log.d(TAG_STREAM, String.format("[%s] Incomplete data in buffer: %s",
+                        portKey, bufferStr.replace("\r", "\\r").replace("\n", "\\n")));
+            }
         } catch (Exception e) {
+            Log.e(TAG_STREAM, String.format("[%s] Parsing error: %s", portKey, e.getMessage()), e);
             notifyStreamError(portKey, "Parsing error: " + e.getMessage());
         }
     }
 
     private void emitDataReceived(String portKey, String data, String rawData) {
-        if (plugin == null)
+        if (plugin == null) {
+            Log.w(TAG_STREAM, String.format("[%s] Plugin is null, cannot emit data", portKey));
             return;
+        }
 
         JSObject event = new JSObject();
         event.put("key", portKey);
         event.put("data", data);
         event.put("rawData", rawData);
 
+        Log.d(TAG_STREAM, String.format("[%s] Emitting to JS - data: %s, rawData: %s",
+                portKey, data, rawData.replace("\r", "\\r").replace("\n", "\\n")));
+
         plugin.notifyDataReceived(event);
     }
 
     private void notifyStreamError(String portKey, String error) {
-        if (plugin == null)
+        if (plugin == null) {
+            Log.w(TAG_STREAM, String.format("[%s] Plugin is null, cannot emit error", portKey));
             return;
+        }
 
         JSObject event = new JSObject();
         event.put("key", portKey);
         event.put("error", error);
 
+        Log.e(TAG_STREAM, String.format("[%s] Emitting error to JS: %s", portKey, error));
+
         plugin.notifyStreamError(event);
+    }
+
+    // Helper method to convert bytes to hex string for logging
+    private static String bytesToHex(byte[] bytes, int length) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(length, bytes.length); i++) {
+            sb.append(String.format("%02X ", bytes[i]));
+        }
+        return sb.toString().trim();
     }
 
 }
