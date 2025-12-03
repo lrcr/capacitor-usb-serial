@@ -154,6 +154,8 @@ public class UsbSerial {
         }
 
         try {
+            stopStreamingInternal(portKey);
+
             UsbSerialPort port = activePorts.get(portKey);
             port.close();
             activePorts.remove(portKey);
@@ -213,6 +215,12 @@ public class UsbSerial {
 
     public void endConnections(PluginCall call) {
         List<String> errors = new ArrayList<>();
+
+        // Stop all streaming first
+        for (String key : activePorts.keySet()) {
+            stopStreamingInternal(key);
+        }
+
         for (Map.Entry<String, UsbSerialPort> entry : activePorts.entrySet()) {
             try {
                 entry.getValue().close();
@@ -234,6 +242,9 @@ public class UsbSerial {
             UsbSerialPort port = activePorts.get(key);
             if (port != null) {
                 try {
+                    // Stop streaming first to prevent race condition crashes
+                    stopStreamingInternal(key);
+
                     port.close();
                     activePorts.remove(key);
                 } catch (Exception e) {
