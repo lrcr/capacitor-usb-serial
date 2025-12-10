@@ -7,14 +7,14 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class Const {
-    static final int WRITE_WAIT_MILLIS = 500;
-    static final int READ_WAIT_MILLIS = 500;
+    static final int WRITE_WAIT_MILLIS = 100;
+    static final int READ_WAIT_MILLIS = 100;
     // Timeout for each read chunk - increased to handle slower devices and USB
     // polling delays
-    static final int READ_CHUNK_TIMEOUT_MILLIS = 500;
+    static final int READ_CHUNK_TIMEOUT_MILLIS = 100;
     // Time to wait with no data before considering read complete - increased to
     // prevent premature cutoff
-    static final int READ_IDLE_TIMEOUT_MILLIS = 500;
+    static final int READ_IDLE_TIMEOUT_MILLIS = 100;
     // Safety limit for total read duration
     static final int READ_MAX_TOTAL_MILLIS = 3000;
     static final int DEFAULT_BAUD_RATE = 9600;
