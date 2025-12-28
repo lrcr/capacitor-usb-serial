@@ -32,8 +32,6 @@ public class UsbSerial {
     private UsbManager manager;
     private Map<String, UsbSerialPort> activePorts = new ConcurrentHashMap<>();
     private Map<String, SerialInputOutputManager> streamManagers = new ConcurrentHashMap<>();
-    private Map<String, StringBuilder> streamBuffers = new ConcurrentHashMap<>();
-    private Map<String, String> streamDelimiters = new ConcurrentHashMap<>();
     private UsbSerialPlugin plugin;
 
     private String generatePortKey(UsbDevice device) {
@@ -227,6 +225,11 @@ public class UsbSerial {
                         chunkCount, numBytesRead,
                         chunk.replace("\r", "\\r").replace("\n", "\\n"),
                         bytesToHex(buffer, numBytesRead)));
+
+                if (totalBytesRead >= Const.READ_MAX_BUFFER_SIZE) {
+                    Log.d(TAG, String.format("Buffer size limit reached (%d bytes), stopping read", totalBytesRead));
+                    break;
+                }
             } else {
                 // Check if we've been idle long enough
                 long idleTime = System.currentTimeMillis() - lastDataTime;
@@ -436,9 +439,6 @@ public class UsbSerial {
         // Stop existing stream if any
         stopStreamingInternal(portKey);
 
-        streamDelimiters.put(portKey, delimiter);
-        streamBuffers.put(portKey, new StringBuilder());
-
         SerialInputOutputManager.Listener listener = new SerialInputOutputManager.Listener() {
             @Override
             public void onNewData(byte[] data) {
@@ -479,56 +479,17 @@ public class UsbSerial {
             manager.stop();
             streamManagers.remove(portKey);
         }
-        streamBuffers.remove(portKey);
-        streamDelimiters.remove(portKey);
     }
 
     private void processStreamData(String portKey, byte[] data) {
         try {
             String rawChunk = new String(data, StandardCharsets.UTF_8);
-            StringBuilder buffer = streamBuffers.get(portKey);
-            String delimiter = streamDelimiters.get(portKey);
-
-            if (buffer == null || delimiter == null) {
-                Log.w(TAG_STREAM, String.format("[%s] Buffer or delimiter is null, ignoring data", portKey));
-                return;
-            }
-
-            buffer.append(rawChunk);
-            Log.d(TAG_STREAM, String.format("[%s] Buffer after append: %s",
-                    portKey, buffer.toString().replace("\r", "\\r").replace("\n", "\\n")));
-
-            // Split by delimiter and emit complete messages
-            String bufferStr = buffer.toString();
-            int delimiterIndex;
-            int messageCount = 0;
-
-            while ((delimiterIndex = bufferStr.indexOf(delimiter)) >= 0) {
-                String message = bufferStr.substring(0, delimiterIndex);
-                messageCount++;
-
-                // Construct the "raw" data for this message (message + delimiter)
-                // This ensures JS gets the full context, not just the latest chunk
-                String completeRawMessage = message + delimiter;
-
-                Log.d(TAG_STREAM, String.format("[%s] Emitting message %d: %s",
-                        portKey, messageCount, message));
-                emitDataReceived(portKey, message, completeRawMessage);
-
-                bufferStr = bufferStr.substring(delimiterIndex + delimiter.length());
-            }
-
-            // Keep remaining incomplete data in buffer
-            buffer.setLength(0);
-            buffer.append(bufferStr);
-
-            if (bufferStr.length() > 0) {
-                Log.d(TAG_STREAM, String.format("[%s] Incomplete data in buffer: %s",
-                        portKey, bufferStr.replace("\r", "\\r").replace("\n", "\\n")));
-            }
+            Log.d(TAG_STREAM, String.format("[%s] Received %d bytes: %s",
+                    portKey, data.length, rawChunk.replace("\r", "\\r").replace("\n", "\\n")));
+            emitDataReceived(portKey, rawChunk, rawChunk);
         } catch (Exception e) {
-            Log.e(TAG_STREAM, String.format("[%s] Parsing error: %s", portKey, e.getMessage()), e);
-            notifyStreamError(portKey, "Parsing error: " + e.getMessage());
+            Log.e(TAG_STREAM, String.format("[%s] Error: %s", portKey, e.getMessage()), e);
+            notifyStreamError(portKey, "Error: " + e.getMessage());
         }
     }
 

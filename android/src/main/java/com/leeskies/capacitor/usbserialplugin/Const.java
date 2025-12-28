@@ -17,6 +17,8 @@ public class Const {
     static final int READ_IDLE_TIMEOUT_MILLIS = 100;
     // Safety limit for total read duration
     static final int READ_MAX_TOTAL_MILLIS = 3000;
+    // Stop reading once buffer reaches this size (enough for one complete message)
+    static final int READ_MAX_BUFFER_SIZE = 64;
     static final int DEFAULT_BAUD_RATE = 9600;
     static final int DEFAULT_DATA_BITS = 8;
     static final int DEFAULT_STOP_BITS = UsbSerialPort.STOPBITS_1;
