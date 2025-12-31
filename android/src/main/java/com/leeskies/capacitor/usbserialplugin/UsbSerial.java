@@ -488,14 +488,51 @@ public class UsbSerial {
         streamDelimiters.remove(portKey);
     }
 
+    private static class DelimiterMatch {
+        int index;
+        int length;
+        String delimiter;
+
+        DelimiterMatch(int index, int length, String delimiter) {
+            this.index = index;
+            this.length = length;
+            this.delimiter = delimiter;
+        }
+    }
+
+    private DelimiterMatch findNextDelimiter(String str) {
+        int crlfIndex = str.indexOf("\r\n");
+        int crIndex = str.indexOf("\r");
+        int lfIndex = str.indexOf("\n");
+
+        DelimiterMatch best = null;
+
+        if (crlfIndex >= 0) {
+            best = new DelimiterMatch(crlfIndex, 2, "\\r\\n");
+        }
+
+        if (crIndex >= 0 && (best == null || crIndex < best.index)) {
+            if (crlfIndex < 0 || crIndex != crlfIndex) {
+                best = new DelimiterMatch(crIndex, 1, "\\r");
+            }
+        }
+
+        if (lfIndex >= 0 && (best == null || lfIndex < best.index)) {
+            if (crlfIndex < 0 || lfIndex != crlfIndex + 1) {
+                best = new DelimiterMatch(lfIndex, 1, "\\n");
+            }
+        }
+
+        return best;
+    }
+
     private void processStreamData(String portKey, byte[] data) {
         try {
             String rawChunk = new String(data, StandardCharsets.UTF_8);
             StringBuilder buffer = streamBuffers.get(portKey);
-            String delimiter = streamDelimiters.get(portKey);
 
-            if (buffer == null || delimiter == null) {
-                Log.w(TAG_STREAM, String.format("[%s] Buffer or delimiter is null, ignoring data", portKey));
+            if (buffer == null) {
+                Log.w(TAG_STREAM, String.format("[%s] Buffer is null, ignoring data", portKey));
                 return;
             }
 
@@ -504,20 +541,23 @@ public class UsbSerial {
                     portKey, buffer.toString().replace("\r", "\\r").replace("\n", "\\n")));
 
             String bufferStr = buffer.toString();
-            int delimiterIndex;
             int messageCount = 0;
 
-            while ((delimiterIndex = bufferStr.indexOf(delimiter)) >= 0) {
-                String message = bufferStr.substring(0, delimiterIndex);
+            DelimiterMatch match;
+            while ((match = findNextDelimiter(bufferStr)) != null) {
+                String message = bufferStr.substring(0, match.index);
                 messageCount++;
 
-                String completeRawMessage = message + delimiter;
+                String rawDelimiter = match.delimiter.replace("\\r", "\r").replace("\\n", "\n");
+                String completeRawMessage = message + rawDelimiter;
 
-                Log.d(TAG_STREAM, String.format("[%s] Emitting message %d: %s",
-                        portKey, messageCount, message));
-                emitDataReceived(portKey, message, completeRawMessage);
+                if (message.length() > 0) {
+                    Log.d(TAG_STREAM, String.format("[%s] Emitting message %d (delim=%s): %s",
+                            portKey, messageCount, match.delimiter, message));
+                    emitDataReceived(portKey, message, completeRawMessage);
+                }
 
-                bufferStr = bufferStr.substring(delimiterIndex + delimiter.length());
+                bufferStr = bufferStr.substring(match.index + match.length);
             }
 
             buffer.setLength(0);
