@@ -526,9 +526,19 @@ public class UsbSerial {
         return best;
     }
 
+    private String stripControlChars(String input) {
+        StringBuilder sb = new StringBuilder();
+        for (char c : input.toCharArray()) {
+            if (c == '\r' || c == '\n' || (c >= 0x20 && c < 0x7F)) {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
     private void processStreamData(String portKey, byte[] data) {
         try {
-            String rawChunk = new String(data, StandardCharsets.UTF_8);
+            String rawChunk = stripControlChars(new String(data, StandardCharsets.UTF_8));
             StringBuilder buffer = streamBuffers.get(portKey);
 
             if (buffer == null) {
