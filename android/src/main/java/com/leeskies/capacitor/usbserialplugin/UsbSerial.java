@@ -488,44 +488,6 @@ public class UsbSerial {
         streamDelimiters.remove(portKey);
     }
 
-    private static class DelimiterMatch {
-        int index;
-        int length;
-        String delimiter;
-
-        DelimiterMatch(int index, int length, String delimiter) {
-            this.index = index;
-            this.length = length;
-            this.delimiter = delimiter;
-        }
-    }
-
-    private DelimiterMatch findNextDelimiter(String str) {
-        int crlfIndex = str.indexOf("\r\n");
-        int crIndex = str.indexOf("\r");
-        int lfIndex = str.indexOf("\n");
-
-        DelimiterMatch best = null;
-
-        if (crlfIndex >= 0) {
-            best = new DelimiterMatch(crlfIndex, 2, "\\r\\n");
-        }
-
-        if (crIndex >= 0 && (best == null || crIndex < best.index)) {
-            if (crlfIndex < 0 || crIndex != crlfIndex) {
-                best = new DelimiterMatch(crIndex, 1, "\\r");
-            }
-        }
-
-        if (lfIndex >= 0 && (best == null || lfIndex < best.index)) {
-            if (crlfIndex < 0 || lfIndex != crlfIndex + 1) {
-                best = new DelimiterMatch(lfIndex, 1, "\\n");
-            }
-        }
-
-        return best;
-    }
-
     private String stripControlChars(String input) {
         StringBuilder sb = new StringBuilder();
         for (char c : input.toCharArray()) {
@@ -552,30 +514,54 @@ public class UsbSerial {
 
             String bufferStr = buffer.toString();
             int messageCount = 0;
+            int pos = 0;
 
-            DelimiterMatch match;
-            while ((match = findNextDelimiter(bufferStr)) != null) {
-                String message = bufferStr.substring(0, match.index);
-                messageCount++;
+            while (pos < bufferStr.length()) {
+                int delimiterStart = -1;
+                for (int i = pos; i < bufferStr.length(); i++) {
+                    char c = bufferStr.charAt(i);
+                    if (c == '\r' || c == '\n') {
+                        delimiterStart = i;
+                        break;
+                    }
+                }
 
-                String rawDelimiter = match.delimiter.replace("\\r", "\r").replace("\\n", "\n");
-                String completeRawMessage = message + rawDelimiter;
+                if (delimiterStart == -1) {
+                    break;
+                }
+
+                int delimiterEnd = delimiterStart;
+                while (delimiterEnd < bufferStr.length()) {
+                    char c = bufferStr.charAt(delimiterEnd);
+                    if (c != '\r' && c != '\n') {
+                        break;
+                    }
+                    delimiterEnd++;
+                }
+
+                String message = bufferStr.substring(pos, delimiterStart);
+                String delimiter = bufferStr.substring(delimiterStart, delimiterEnd);
+                String completeRawMessage = message + delimiter;
 
                 if (message.length() > 0) {
+                    messageCount++;
                     Log.d(TAG_STREAM, String.format("[%s] Emitting message %d (delim=%s): %s",
-                            portKey, messageCount, match.delimiter, message));
+                            portKey, messageCount,
+                            delimiter.replace("\r", "\\r").replace("\n", "\\n"),
+                            message));
                     emitDataReceived(portKey, message, completeRawMessage);
                 }
 
-                bufferStr = bufferStr.substring(match.index + match.length);
+                pos = delimiterEnd;
             }
 
             buffer.setLength(0);
-            buffer.append(bufferStr);
+            String remaining = (pos < bufferStr.length()) ? bufferStr.substring(pos) : "";
+            buffer.append(remaining);
 
-            if (bufferStr.length() > 0) {
+            if (remaining.length() > 0) {
                 Log.d(TAG_STREAM, String.format("[%s] Incomplete data in buffer: %s",
-                        portKey, bufferStr.replace("\r", "\\r").replace("\n", "\\n")));
+                        portKey, remaining.replace("\r", "\\r").replace("\n", "\\n")));
             }
         } catch (Exception e) {
             Log.e(TAG_STREAM, String.format("[%s] Parsing error: %s", portKey, e.getMessage()), e);
