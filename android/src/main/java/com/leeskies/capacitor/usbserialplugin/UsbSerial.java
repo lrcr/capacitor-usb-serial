@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import android.util.Base64;
 
 public class UsbSerial {
     private static final String TAG = "UsbSerial";
@@ -32,6 +33,8 @@ public class UsbSerial {
     private UsbManager manager;
     private Map<String, UsbSerialPort> activePorts = new ConcurrentHashMap<>();
     private Map<String, SerialInputOutputManager> streamManagers = new ConcurrentHashMap<>();
+    private Map<String, Thread> rawStreamThreads = new ConcurrentHashMap<>();
+    private Map<String, UsbDeviceConnection> activeConnections = new ConcurrentHashMap<>();
     private Map<String, StringBuilder> streamBuffers = new ConcurrentHashMap<>();
     private Map<String, String> streamDelimiters = new ConcurrentHashMap<>();
     private UsbSerialPlugin plugin;
@@ -131,21 +134,87 @@ public class UsbSerial {
             parity = Const.PARITY.get(parityKey);
         if (!Const.STOP_BITS.containsKey(stopBits))
             call.reject("Invalid int value for stopBits: " + stopBits);
+
+        Log.i(TAG, String.format("── Connection Diagnostic ──"));
+        Log.i(TAG, String.format("Device: %s (VID:%04x PID:%04x)", device.getDeviceName(), device.getVendorId(), device.getProductId()));
+        Log.i(TAG, String.format("Driver: %s", driver.getClass().getSimpleName()));
+        Log.i(TAG, String.format("Params: baud=%d data=%d stop=%d parity=%s", baudRate, dataBits, stopBits, parityKey));
+
         UsbDeviceConnection connection = manager.openDevice(device);
         if (connection == null) {
+            Log.e(TAG, "Failed to open device connection (USB permission issue?)");
             call.reject("Failed to open device connection");
             return;
         }
+        Log.i(TAG, "USB connection opened OK");
+
         UsbSerialPort port = driver.getPorts().get(0);
         try {
             port.open(connection);
+            Log.i(TAG, "Serial port opened OK");
+
             port.setParameters(baudRate, dataBits, stopBits, parity);
+            Log.i(TAG, "Parameters set OK");
+
+            // Flow control을 NONE으로 명시 설정
+            // FTDI 칩 리셋 후 기본값이 hardware flow control일 수 있음
+            // CTS=false 상태에서 hardware FC면 TX가 블로킹됨 → 데이터 미전송
+            // SIO_SET_FLOW_CTRL = 2, wValue = 0 (NONE), wIndex = port
+            try {
+                int result = connection.controlTransfer(
+                    0x40, 2, 0, 0, null, 0, 1000);
+                Log.i(TAG, "Flow control set to NONE (result=" + result + ")");
+            } catch (Exception e) {
+                Log.w(TAG, "Flow control set failed: " + e.getMessage());
+            }
+
+            // RTS + DTR 활성화
+            // Linux에서는 port open 시 커널이 자동으로 DTR=HIGH 설정하지만,
+            // Android usb-serial-for-android는 FTDI 리셋으로 DTR=LOW가 됨
+            // Philips MIB는 DTR=HIGH 필요 (상대방 ready 시그널)
+            port.setDTR(true);
+            port.setRTS(true);
+            Log.i(TAG, "DTR + RTS set to HIGH");
+
+            // CTS/DSR/CD/RI 상태 확인 (지원하는 드라이버만)
+            try {
+                boolean cts = port.getCTS();
+                boolean dsr = port.getDSR();
+                boolean cd = port.getCD();
+                boolean ri = port.getRI();
+                Log.i(TAG, String.format("Signals: CTS=%b DSR=%b CD=%b RI=%b", cts, dsr, cd, ri));
+                if (!cts && !dsr) {
+                    Log.w(TAG, "⚠ CTS/DSR both false — 모니터가 연결을 인식하지 못할 수 있음");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Signal read not supported: " + e.getMessage());
+            }
+
             String key = generatePortKey(device);
             activePorts.put(key, port);
+            activeConnections.put(key, connection);
+            Log.i(TAG, String.format("Port registered: key=%s ── Connection OK ──", key));
+
             JSObject result = new JSObject();
             result.put("portKey", key);
+            // JS 오버레이 로그용 진단 데이터
+            JSObject diag = new JSObject();
+            diag.put("driver", driver.getClass().getSimpleName());
+            diag.put("vid", String.format("%04x", device.getVendorId()));
+            diag.put("pid", String.format("%04x", device.getProductId()));
+            diag.put("deviceName", device.getDeviceName());
+            try {
+                diag.put("cts", port.getCTS());
+                diag.put("dsr", port.getDSR());
+                diag.put("cd", port.getCD());
+                diag.put("ri", port.getRI());
+            } catch (Exception e) {
+                diag.put("signalError", e.getMessage());
+            }
+            result.put("diagnostic", diag);
             call.resolve(result);
         } catch (Exception e) {
+            Log.e(TAG, "Connection failed: " + e.getMessage(), e);
             call.reject("Failed to initialize connection with selected device: " + e.getMessage());
         }
     }
@@ -345,12 +414,16 @@ public class UsbSerial {
         try {
             long writeStartTime = System.currentTimeMillis();
 
-            flushInputBuffer(port);
+            // 스트리밍 활성화 상태에서는 flushInputBuffer 스킵 (read 스레드 충돌 방지)
+            if (!streamManagers.containsKey(portKey)) {
+                flushInputBuffer(port);
+            }
 
-            byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
-            Log.d(TAG, String.format("Writing command: '%s' (hex: %s)",
-                    message.replace("\r", "\\r").replace("\n", "\\n"),
-                    bytesToHex(messageBytes, messageBytes.length)));
+            // base64 디코딩: JS에서 bytesToBase64()로 인코딩된 바이너리 복원
+            byte[] messageBytes = Base64.decode(message, Base64.NO_WRAP);
+            Log.d(TAG, String.format("Writing %d bytes (hex: %s)",
+                    messageBytes.length,
+                    bytesToHex(messageBytes, Math.min(messageBytes.length, 32))));
 
             long beforeWrite = System.currentTimeMillis();
             port.write(messageBytes, Const.WRITE_WAIT_MILLIS);
@@ -429,8 +502,8 @@ public class UsbSerial {
         String portKey = call.getString("key");
         String delimiter = call.getString("delimiter", "\n");
 
-        Log.d(TAG_STREAM, String.format("[%s] Starting stream with delimiter: %s",
-                portKey, delimiter.replace("\r", "\\r").replace("\n", "\\n")));
+        Log.d(TAG_STREAM, String.format("[%s] Starting stream (binary=%b)",
+                portKey, delimiter.isEmpty()));
 
         UsbSerialPort port = activePorts.get(portKey);
         if (port == null) {
@@ -444,12 +517,87 @@ public class UsbSerial {
         streamDelimiters.put(portKey, delimiter);
         streamBuffers.put(portKey, new StringBuilder());
 
+        // 바이너리 모드 (delimiter 빈 문자열): raw bulkTransfer 스레드 사용
+        // SerialInputOutputManager의 UsbRequest 비동기 읽기가 허브에서 실패하는 문제 우회
+        if (delimiter.isEmpty()) {
+            UsbDeviceConnection conn = activeConnections.get(portKey);
+            if (conn == null) {
+                call.reject("No connection for port: " + portKey);
+                return;
+            }
+
+            // IN endpoint 탐색
+            UsbSerialPort serialPort = activePorts.get(portKey);
+            android.hardware.usb.UsbDevice device = null;
+            // activePorts에서 디바이스 정보 추출 — UsbManager에서 찾기
+            for (android.hardware.usb.UsbDevice d : manager.getDeviceList().values()) {
+                String dk = generatePortKey(d);
+                if (dk.equals(portKey)) {
+                    device = d;
+                    break;
+                }
+            }
+            if (device == null) {
+                call.reject("Device not found for key: " + portKey);
+                return;
+            }
+
+            android.hardware.usb.UsbEndpoint inEndpoint = null;
+            android.hardware.usb.UsbInterface iface = device.getInterface(0);
+            for (int i = 0; i < iface.getEndpointCount(); i++) {
+                android.hardware.usb.UsbEndpoint ep = iface.getEndpoint(i);
+                if (ep.getDirection() == android.hardware.usb.UsbConstants.USB_DIR_IN) {
+                    inEndpoint = ep;
+                    break;
+                }
+            }
+            if (inEndpoint == null) {
+                call.reject("No IN endpoint found");
+                return;
+            }
+
+            final android.hardware.usb.UsbEndpoint ep = inEndpoint;
+            Thread readThread = new Thread(() -> {
+                byte[] buf = new byte[4096];
+                int readCount = 0;
+                Log.i(TAG_STREAM, String.format("[%s] Raw bulk stream started (EP: 0x%02x)", portKey, ep.getAddress()));
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        int n = conn.bulkTransfer(ep, buf, buf.length, 100);
+                        readCount++;
+                        if (n > 2) {
+                            // FTDI: 처음 2바이트는 상태, 나머지가 실제 시리얼 데이터
+                            byte[] serialData = new byte[n - 2];
+                            System.arraycopy(buf, 2, serialData, 0, n - 2);
+                            Log.d(TAG_STREAM, String.format("[%s] bulk#%d: %d serial bytes", portKey, readCount, n - 2));
+                            processStreamData(portKey, serialData);
+                        }
+                        if (n < 0) {
+                            // bulkTransfer 실패 — 디바이스 분리 가능성
+                            Log.e(TAG_STREAM, String.format("[%s] bulkTransfer returned %d, stopping", portKey, n));
+                            notifyStreamError(portKey, "USB bulk read failed");
+                            break;
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG_STREAM, String.format("[%s] Read error: %s", portKey, e.getMessage()));
+                        notifyStreamError(portKey, "Read error: " + e.getMessage());
+                        break;
+                    }
+                }
+                Log.i(TAG_STREAM, String.format("[%s] Raw bulk stream ended (%d reads)", portKey, readCount));
+            }, "RawBulkStream-" + portKey);
+            rawStreamThreads.put(portKey, readThread);
+            readThread.start();
+            Log.d(TAG_STREAM, String.format("[%s] Stream started successfully (raw bulk mode)", portKey));
+            call.resolve();
+            return;
+        }
+
+        // 텍스트 모드: 기존 SerialInputOutputManager 사용
         SerialInputOutputManager.Listener listener = new SerialInputOutputManager.Listener() {
             @Override
             public void onNewData(byte[] data) {
                 try {
-                    Log.d(TAG_STREAM, String.format("[%s] onNewData: %d bytes (hex: %s)",
-                            portKey, data.length, bytesToHex(data, Math.min(data.length, 64))));
                     processStreamData(portKey, data);
                 } catch (Exception e) {
                     Log.e(TAG_STREAM, String.format("[%s] Error processing data: %s", portKey, e.getMessage()), e);
@@ -480,9 +628,15 @@ public class UsbSerial {
     private void stopStreamingInternal(String portKey) {
         SerialInputOutputManager manager = streamManagers.get(portKey);
         if (manager != null) {
-            Log.d(TAG_STREAM, String.format("[%s] Stopping stream", portKey));
+            Log.d(TAG_STREAM, String.format("[%s] Stopping stream (SIO)", portKey));
             manager.stop();
             streamManagers.remove(portKey);
+        }
+        Thread rawThread = rawStreamThreads.get(portKey);
+        if (rawThread != null) {
+            Log.d(TAG_STREAM, String.format("[%s] Stopping stream (raw bulk)", portKey));
+            rawThread.interrupt();
+            rawStreamThreads.remove(portKey);
         }
         streamBuffers.remove(portKey);
         streamDelimiters.remove(portKey);
@@ -500,6 +654,16 @@ public class UsbSerial {
 
     private void processStreamData(String portKey, byte[] data) {
         try {
+            String delimiter = streamDelimiters.get(portKey);
+
+            // 바이너리 모드: delimiter가 비어있으면 raw bytes를 base64로 즉시 전송
+            if (delimiter != null && delimiter.isEmpty()) {
+                String base64Data = Base64.encodeToString(data, Base64.NO_WRAP);
+                emitDataReceived(portKey, base64Data, base64Data);
+                return;
+            }
+
+            // 텍스트 모드: 기존 delimiter 기반 처리
             String rawChunk = stripControlChars(new String(data, StandardCharsets.UTF_8));
             StringBuilder buffer = streamBuffers.get(portKey);
 
@@ -509,11 +673,8 @@ public class UsbSerial {
             }
 
             buffer.append(rawChunk);
-            Log.d(TAG_STREAM, String.format("[%s] Buffer after append: %s",
-                    portKey, buffer.toString().replace("\r", "\\r").replace("\n", "\\n")));
 
             String bufferStr = buffer.toString();
-            int messageCount = 0;
             int pos = 0;
 
             while (pos < bufferStr.length()) {
@@ -540,15 +701,10 @@ public class UsbSerial {
                 }
 
                 String message = bufferStr.substring(pos, delimiterStart);
-                String delimiter = bufferStr.substring(delimiterStart, delimiterEnd);
-                String completeRawMessage = message + delimiter;
+                String delim = bufferStr.substring(delimiterStart, delimiterEnd);
+                String completeRawMessage = message + delim;
 
                 if (message.length() > 0) {
-                    messageCount++;
-                    Log.d(TAG_STREAM, String.format("[%s] Emitting message %d (delim=%s): %s",
-                            portKey, messageCount,
-                            delimiter.replace("\r", "\\r").replace("\n", "\\n"),
-                            message));
                     emitDataReceived(portKey, message, completeRawMessage);
                 }
 
@@ -558,11 +714,6 @@ public class UsbSerial {
             buffer.setLength(0);
             String remaining = (pos < bufferStr.length()) ? bufferStr.substring(pos) : "";
             buffer.append(remaining);
-
-            if (remaining.length() > 0) {
-                Log.d(TAG_STREAM, String.format("[%s] Incomplete data in buffer: %s",
-                        portKey, remaining.replace("\r", "\\r").replace("\n", "\\n")));
-            }
         } catch (Exception e) {
             Log.e(TAG_STREAM, String.format("[%s] Parsing error: %s", portKey, e.getMessage()), e);
             notifyStreamError(portKey, "Parsing error: " + e.getMessage());
