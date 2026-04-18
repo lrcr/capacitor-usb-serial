@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.os.Build;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
@@ -120,7 +121,11 @@ public class UsbSerial {
                 }
             }
         };
-        context.registerReceiver(usbReceiver, filter);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            context.registerReceiver(usbReceiver, filter);
+        }
         manager.requestPermission(device, permissionIntent);
     }
 
@@ -560,23 +565,34 @@ public class UsbSerial {
             Thread readThread = new Thread(() -> {
                 byte[] buf = new byte[4096];
                 int readCount = 0;
+                int consecutiveErrors = 0;
                 Log.i(TAG_STREAM, String.format("[%s] Raw bulk stream started (EP: 0x%02x)", portKey, ep.getAddress()));
                 while (!Thread.currentThread().isInterrupted()) {
                     try {
-                        int n = conn.bulkTransfer(ep, buf, buf.length, 100);
+                        int n = conn.bulkTransfer(ep, buf, buf.length, 200);
                         readCount++;
                         if (n > 2) {
                             // FTDI: 처음 2바이트는 상태, 나머지가 실제 시리얼 데이터
+                            consecutiveErrors = 0;
                             byte[] serialData = new byte[n - 2];
                             System.arraycopy(buf, 2, serialData, 0, n - 2);
                             Log.d(TAG_STREAM, String.format("[%s] bulk#%d: %d serial bytes", portKey, readCount, n - 2));
                             processStreamData(portKey, serialData);
+                        } else if (n >= 0) {
+                            // FTDI modem status only (n=2) or empty (n=0) — 정상, 데이터 없음
+                            consecutiveErrors = 0;
                         }
                         if (n < 0) {
-                            // bulkTransfer 실패 — 디바이스 분리 가능성
-                            Log.e(TAG_STREAM, String.format("[%s] bulkTransfer returned %d, stopping", portKey, n));
-                            notifyStreamError(portKey, "USB bulk read failed");
-                            break;
+                            consecutiveErrors++;
+                            if (consecutiveErrors >= 10) {
+                                // 10회 연속 실패 → 디바이스 분리로 판단
+                                Log.e(TAG_STREAM, String.format("[%s] %d consecutive bulk errors, stopping", portKey, consecutiveErrors));
+                                notifyStreamError(portKey, "USB bulk read failed");
+                                break;
+                            }
+                            // 일시적 에러 → 재시도 (USB 버스 경합 등)
+                            Log.w(TAG_STREAM, String.format("[%s] bulk error #%d (transient), retrying", portKey, consecutiveErrors));
+                            try { Thread.sleep(10); } catch (InterruptedException ie) { break; }
                         }
                     } catch (Exception e) {
                         Log.e(TAG_STREAM, String.format("[%s] Read error: %s", portKey, e.getMessage()));
