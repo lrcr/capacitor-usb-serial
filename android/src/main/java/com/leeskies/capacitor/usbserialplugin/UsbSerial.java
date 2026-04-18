@@ -526,8 +526,8 @@ public class UsbSerial {
         // port.read()는 port.write()와 동일한 직렬 포트 추상화를 사용하므로 충돌 없음
         // (이전: raw bulkTransfer가 port.write()와 다른 API 레이어 사용 → 엔드포인트 경쟁)
         if (delimiter.isEmpty()) {
-            UsbSerialPort port = activePorts.get(portKey);
-            if (port == null) {
+            UsbSerialPort serialPort = activePorts.get(portKey);
+            if (serialPort == null) {
                 call.reject("No port for key: " + portKey);
                 return;
             }
@@ -539,7 +539,7 @@ public class UsbSerial {
                 Log.i(TAG_STREAM, String.format("[%s] Serial port stream started", portKey));
                 while (!Thread.currentThread().isInterrupted()) {
                     try {
-                        int n = port.read(buf, 200);
+                        int n = serialPort.read(buf, 200);
                         readCount++;
                         if (n > 0) {
                             consecutiveErrors = 0;
